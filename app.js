@@ -20,6 +20,9 @@
   var slideA = document.getElementById("slide-a");
   var slideB = document.getElementById("slide-b");
   var statusEl = document.getElementById("status");
+  var clockEl = document.getElementById("clock");
+  var clockDateEl = document.getElementById("clock-date");
+  var clockTimeEl = document.getElementById("clock-time");
   var settingsEl = document.getElementById("settings");
   var stayAwake = document.getElementById("stay-awake");
   var shuffleButton = document.getElementById("shuffle-toggle");
@@ -53,6 +56,8 @@
   var removeTarget = null;
   var savedCount = 0;
   var playGeneration = 0;
+  var clockStamp = "";
+  var clockPlaceToken = 0;
   var libraryChain = Promise.resolve();
   var dbPromise = null;
 
@@ -150,6 +155,7 @@
   }
 
   function showStatus(text) {
+    hideClock();
     statusEl.hidden = false;
     statusEl.textContent = text;
   }
@@ -157,6 +163,202 @@
   function hideStatus() {
     statusEl.hidden = true;
     statusEl.textContent = "";
+  }
+
+  function hideClock() {
+    clockEl.hidden = true;
+  }
+
+  function updateClockText() {
+    var date = new Date();
+    var dateText = date.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric"
+    });
+    var timeText = date.toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit"
+    });
+    var stamp = dateText + "\n" + timeText;
+    if (stamp === clockStamp) return false;
+    clockStamp = stamp;
+    clockDateEl.textContent = dateText;
+    clockTimeEl.textContent = timeText;
+    return true;
+  }
+
+  function photoContentRect(slide) {
+    var stageBox = stage.getBoundingClientRect();
+    var box = slide.getBoundingClientRect();
+    var nw = slide.naturalWidth;
+    var nh = slide.naturalHeight;
+    if (!nw || !nh || box.width < 2 || box.height < 2) return null;
+    var scale = Math.min(box.width / nw, box.height / nh);
+    var w = nw * scale;
+    var h = nh * scale;
+    return {
+      x: box.left - stageBox.left + (box.width - w) / 2,
+      y: box.top - stageBox.top + (box.height - h) / 2,
+      w: w,
+      h: h
+    };
+  }
+
+  function isSkinTone(r, g, b) {
+    var max = Math.max(r, g, b);
+    var min = Math.min(r, g, b);
+    return r > 95 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15 && (max - min) > 15;
+  }
+
+  function samplePatch(pixels, width, x0, y0, x1, y1) {
+    var skin = 0;
+    var count = 0;
+    var sum = 0;
+    var sum2 = 0;
+    var red = 0;
+    var green = 0;
+    var blue = 0;
+    var edges = 0;
+    var height = pixels.height;
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(width, x1);
+    y1 = Math.min(height, y1);
+    for (var y = y0; y < y1; y += 1) {
+      var previous = 0;
+      for (var x = x0; x < x1; x += 1) {
+        var offset = (y * width + x) * 4;
+        var r = pixels.data[offset];
+        var g = pixels.data[offset + 1];
+        var b = pixels.data[offset + 2];
+        var lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        sum += lum;
+        sum2 += lum * lum;
+        red += r;
+        green += g;
+        blue += b;
+        count += 1;
+        if (isSkinTone(r, g, b)) skin += 1;
+        if (x > x0) edges += Math.abs(lum - previous);
+        previous = lum;
+      }
+    }
+    if (!count) return null;
+    var mean = sum / count;
+    var variance = Math.max(0, sum2 / count - mean * mean);
+    return {
+      skin: skin / count,
+      detail: Math.sqrt(variance) + edges / count,
+      r: Math.round(red / count),
+      g: Math.round(green / count),
+      b: Math.round(blue / count)
+    };
+  }
+
+  function chooseClockSpot(canvas, clockW, clockH, content) {
+    var context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    var pixels;
+    try {
+      pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    } catch (err) {
+      return null;
+    }
+    var fracW = Math.min(0.46, Math.max(clockW / content.w, 0.16));
+    var fracH = Math.min(0.34, Math.max(clockH / content.h, 0.12));
+    var cols = 5;
+    var rows = 5;
+    var best = null;
+    var topLeft = null;
+    var row;
+    var col;
+    for (row = 0; row < rows; row += 1) {
+      for (col = 0; col < cols; col += 1) {
+        var fx = cols === 1 ? 0 : (col / (cols - 1)) * (1 - fracW);
+        var fy = rows === 1 ? 0 : (row / (rows - 1)) * (1 - fracH);
+        var x0 = Math.floor(fx * canvas.width);
+        var y0 = Math.floor(fy * canvas.height);
+        var x1 = Math.max(x0 + 1, Math.floor((fx + fracW) * canvas.width));
+        var y1 = Math.max(y0 + 1, Math.floor((fy + fracH) * canvas.height));
+        var sample = samplePatch(pixels, canvas.width, x0, y0, x1, y1);
+        if (!sample) continue;
+        var score = sample.detail + sample.skin * 220 + (fx + fy) * 6;
+        var spot = { fx: fx, fy: fy, score: score, sample: sample };
+        if (col === 0 && row === 0) topLeft = spot;
+        if (!best || score < best.score) best = spot;
+      }
+    }
+    if (topLeft && topLeft.sample.skin < 0.12 && topLeft.sample.detail < 34) return topLeft;
+    return best;
+  }
+
+  function paintGlass(sample) {
+    var red = sample ? sample.r : 255;
+    var green = sample ? sample.g : 255;
+    var blue = sample ? sample.b : 255;
+    var lum = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    clockEl.style.backgroundColor = "rgba(" + red + "," + green + "," + blue + ",0.28)";
+    clockEl.style.color = lum > 168 ? "#161616" : "#fff";
+    clockEl.style.borderColor = lum > 168 ? "rgba(255,255,255,0.78)" : "rgba(255,255,255,0.5)";
+  }
+
+  function placeClock() {
+    var token = ++clockPlaceToken;
+    requestAnimationFrame(function () {
+      if (token !== clockPlaceToken) return;
+      var slide = front;
+      var content = slide && slide.getAttribute("data-url") ? photoContentRect(slide) : null;
+      if (!content || content.w < 48 || content.h < 48) {
+        hideClock();
+        return;
+      }
+      updateClockText();
+      clockEl.hidden = false;
+      clockEl.style.transform = "none";
+      var rawW = clockEl.offsetWidth;
+      var rawH = clockEl.offsetHeight;
+      var scale = Math.min(1, (content.w * 0.46) / rawW, (content.h * 0.32) / rawH);
+      clockEl.style.transformOrigin = "top left";
+      clockEl.style.transform = scale < 1 ? "scale(" + scale + ")" : "none";
+      var clockW = rawW * scale;
+      var clockH = rawH * scale;
+      var margin = Math.max(12, Math.min(content.w, content.h) * 0.04);
+      var minX = content.x + margin;
+      var minY = content.y + margin;
+      var maxX = Math.max(minX, content.x + content.w - clockW - margin);
+      var maxY = Math.max(minY, content.y + content.h - clockH - margin);
+
+      function park(fx, fy, sample) {
+        var left = minX + fx * (maxX - minX);
+        var top = minY + fy * (maxY - minY);
+        clockEl.style.left = Math.round(left) + "px";
+        clockEl.style.top = Math.round(top) + "px";
+        paintGlass(sample);
+      }
+
+      park(0, 0, null);
+      if (!slide.complete || !slide.naturalWidth) return;
+      var canvas = document.createElement("canvas");
+      var longEdge = 96;
+      if (slide.naturalWidth >= slide.naturalHeight) {
+        canvas.width = longEdge;
+        canvas.height = Math.max(1, Math.round(longEdge * slide.naturalHeight / slide.naturalWidth));
+      } else {
+        canvas.height = longEdge;
+        canvas.width = Math.max(1, Math.round(longEdge * slide.naturalWidth / slide.naturalHeight));
+      }
+      var context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return;
+      try {
+        context.drawImage(slide, 0, 0, canvas.width, canvas.height);
+      } catch (err) {
+        return;
+      }
+      var spot = chooseClockSpot(canvas, clockW, clockH, content);
+      if (!spot || token !== clockPlaceToken) return;
+      park(spot.fx, spot.fy, spot.sample);
+    });
   }
 
   function clearSlide(slide) {
@@ -248,6 +450,7 @@
     back.style.zIndex = "1";
     now = url;
     hideStatus();
+    placeClock();
   }
 
   function beginIncoming(url, generation) {
@@ -341,6 +544,7 @@
     }).then(function (faded) {
       if (!faded || generation !== playGeneration) return false;
       now = url;
+      placeClock();
       return true;
     }).catch(function () {
       return false;
@@ -967,4 +1171,10 @@
 
   boot();
   requestScreenWakeLock();
+  setInterval(function () {
+    if (!updateClockText()) return;
+    if (!clockEl.hidden) placeClock();
+  }, 1000);
+
+  window.addEventListener("resize", placeClock);
 })();
