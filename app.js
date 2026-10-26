@@ -220,6 +220,8 @@
     var green = 0;
     var blue = 0;
     var edges = 0;
+    var skinEdges = 0;
+    var wasSkin = false;
     var height = pixels.height;
     x0 = Math.max(0, x0);
     y0 = Math.max(0, y0);
@@ -227,6 +229,7 @@
     y1 = Math.min(height, y1);
     for (var y = y0; y < y1; y += 1) {
       var previous = 0;
+      wasSkin = false;
       for (var x = x0; x < x1; x += 1) {
         var offset = (y * width + x) * 4;
         var r = pixels.data[offset];
@@ -239,8 +242,13 @@
         green += g;
         blue += b;
         count += 1;
-        if (isSkinTone(r, g, b)) skin += 1;
-        if (x > x0) edges += Math.abs(lum - previous);
+        var skinPixel = isSkinTone(r, g, b);
+        if (skinPixel) skin += 1;
+        if (x > x0) {
+          edges += Math.abs(lum - previous);
+          if (skinPixel !== wasSkin) skinEdges += 1;
+        }
+        wasSkin = skinPixel;
         previous = lum;
       }
     }
@@ -249,6 +257,7 @@
     var variance = Math.max(0, sum2 / count - mean * mean);
     return {
       skin: skin / count,
+      skinEdges: skinEdges / count,
       detail: Math.sqrt(variance) + edges / count,
       r: Math.round(red / count),
       g: Math.round(green / count),
@@ -256,7 +265,13 @@
     };
   }
 
-  function chooseClockSpot(canvas, clockW, clockH, content) {
+  // A flat field can match the skin-tone test, including the red sample. A person is a skin cluster with edges or detail.
+  function personThere(sample) {
+    if (!sample || sample.skin < 0.18) return false;
+    return sample.skinEdges >= 0.015 || sample.detail >= 12;
+  }
+
+  function chooseClockSpot(canvas, clockW, clockH, content, margin) {
     var context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return null;
     var pixels;
@@ -265,42 +280,48 @@
     } catch (err) {
       return null;
     }
-    var fracW = Math.min(0.46, Math.max(clockW / content.w, 0.16));
-    var fracH = Math.min(0.34, Math.max(clockH / content.h, 0.12));
+
+    function sampleAt(fx, fy) {
+      var spanX = Math.max(0, content.w - clockW - margin * 2);
+      var spanY = Math.max(0, content.h - clockH - margin * 2);
+      var left = margin + fx * spanX;
+      var top = margin + fy * spanY;
+      var x0 = Math.floor(left / content.w * canvas.width);
+      var y0 = Math.floor(top / content.h * canvas.height);
+      var x1 = Math.max(x0 + 1, Math.floor((left + clockW) / content.w * canvas.width));
+      var y1 = Math.max(y0 + 1, Math.floor((top + clockH) / content.h * canvas.height));
+      var sample = samplePatch(pixels, canvas.width, x0, y0, x1, y1);
+      return sample ? { fx: fx, fy: fy, sample: sample } : null;
+    }
+
+    var topLeft = sampleAt(0, 0);
+    if (!personThere(topLeft && topLeft.sample)) return topLeft;
+    var topRight = sampleAt(1, 0);
+    if (!personThere(topRight && topRight.sample)) return topRight || topLeft;
     var cols = 5;
     var rows = 5;
-    var best = null;
-    var topLeft = null;
     var row;
     var col;
     for (row = 0; row < rows; row += 1) {
       for (col = 0; col < cols; col += 1) {
-        var fx = cols === 1 ? 0 : (col / (cols - 1)) * (1 - fracW);
-        var fy = rows === 1 ? 0 : (row / (rows - 1)) * (1 - fracH);
-        var x0 = Math.floor(fx * canvas.width);
-        var y0 = Math.floor(fy * canvas.height);
-        var x1 = Math.max(x0 + 1, Math.floor((fx + fracW) * canvas.width));
-        var y1 = Math.max(y0 + 1, Math.floor((fy + fracH) * canvas.height));
-        var sample = samplePatch(pixels, canvas.width, x0, y0, x1, y1);
-        if (!sample) continue;
-        var score = sample.detail + sample.skin * 220 + (fx + fy) * 6;
-        var spot = { fx: fx, fy: fy, score: score, sample: sample };
-        if (col === 0 && row === 0) topLeft = spot;
-        if (!best || score < best.score) best = spot;
+        var fx = cols === 1 ? 0 : col / (cols - 1);
+        var fy = rows === 1 ? 0 : row / (rows - 1);
+        if (fy === 0 && (fx === 0 || fx === 1)) continue;
+        var spot = sampleAt(fx, fy);
+        if (spot && !personThere(spot.sample)) return spot;
       }
     }
-    if (topLeft && topLeft.sample.skin < 0.12 && topLeft.sample.detail < 34) return topLeft;
-    return best;
+    return topLeft;
   }
 
-  function paintGlass(sample) {
-    var red = sample ? sample.r : 255;
-    var green = sample ? sample.g : 255;
-    var blue = sample ? sample.b : 255;
+  function paintGlyphs(sample) {
+    var red = sample ? sample.r : 32;
+    var green = sample ? sample.g : 32;
+    var blue = sample ? sample.b : 32;
     var lum = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-    clockEl.style.backgroundColor = "rgba(" + red + "," + green + "," + blue + ",0.28)";
-    clockEl.style.color = lum > 168 ? "#161616" : "#fff";
-    clockEl.style.borderColor = lum > 168 ? "rgba(255,255,255,0.78)" : "rgba(255,255,255,0.5)";
+    var ink = lum > 170 ? "rgba(16, 16, 16, 0.58)" : "rgba(255, 255, 255, 0.55)";
+    clockDateEl.style.color = ink;
+    clockTimeEl.style.color = ink;
   }
 
   function placeClock() {
@@ -323,7 +344,7 @@
       clockEl.style.transform = scale < 1 ? "scale(" + scale + ")" : "none";
       var clockW = rawW * scale;
       var clockH = rawH * scale;
-      var margin = Math.max(12, Math.min(content.w, content.h) * 0.04);
+      var margin = Math.max(40, Math.min(content.w, content.h) * 0.07);
       var minX = content.x + margin;
       var minY = content.y + margin;
       var maxX = Math.max(minX, content.x + content.w - clockW - margin);
@@ -334,7 +355,7 @@
         var top = minY + fy * (maxY - minY);
         clockEl.style.left = Math.round(left) + "px";
         clockEl.style.top = Math.round(top) + "px";
-        paintGlass(sample);
+        paintGlyphs(sample);
       }
 
       park(0, 0, null);
@@ -355,7 +376,7 @@
       } catch (err) {
         return;
       }
-      var spot = chooseClockSpot(canvas, clockW, clockH, content);
+      var spot = chooseClockSpot(canvas, clockW, clockH, content, margin);
       if (!spot || token !== clockPlaceToken) return;
       park(spot.fx, spot.fy, spot.sample);
     });
