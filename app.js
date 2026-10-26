@@ -319,7 +319,7 @@
     var green = sample ? sample.g : 32;
     var blue = sample ? sample.b : 32;
     var lum = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-    var ink = lum > 170 ? "rgba(16, 16, 16, 0.58)" : "rgba(255, 255, 255, 0.55)";
+    var ink = lum > 170 ? "rgba(16, 16, 16, 0.12)" : "rgba(255, 255, 255, 0.08)";
     clockDateEl.style.color = ink;
     clockTimeEl.style.color = ink;
   }
