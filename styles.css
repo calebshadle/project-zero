@@ -26,6 +26,40 @@ body {
   touch-action: none;
 }
 
+/* Home Screen: black-translucent makes the layout viewport short by about the status bar.
+   height 100% and inset 0 stop at that viewport, so the black page shows along the bottom.
+   100vh is the screen height, including under the home indicator. A Safari tab keeps inset 0,
+   because 100vh there is taller than the page he can see. */
+@media (display-mode: standalone) {
+  html,
+  body,
+  #stage,
+  #settings {
+    height: 100vh;
+    min-height: 100vh;
+  }
+
+  body,
+  #stage,
+  #settings {
+    bottom: auto;
+  }
+}
+
+html.home-screen,
+html.home-screen body,
+html.home-screen #stage,
+html.home-screen #settings {
+  height: 100vh;
+  min-height: 100vh;
+}
+
+html.home-screen body,
+html.home-screen #stage,
+html.home-screen #settings {
+  bottom: auto;
+}
+
 .slide {
   position: absolute;
   inset: 0;

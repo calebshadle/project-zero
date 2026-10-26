@@ -3,6 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <script>
+    (function () {
+      var homeScreen = window.navigator.standalone === true;
+      if (!homeScreen && window.matchMedia) {
+        homeScreen = window.matchMedia("(display-mode: standalone)").matches;
+      }
+      if (homeScreen) document.documentElement.classList.add("home-screen");
+    })();
+  </script>
   <meta name="theme-color" content="#000000">
   <meta name="color-scheme" content="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
