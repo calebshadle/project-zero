@@ -67,7 +67,7 @@ html.home-screen #settings {
   height: 100%;
   max-width: none;
   max-height: none;
-  object-fit: cover;
+  object-fit: contain;
   object-position: center center;
   background: #000;
   opacity: 0;

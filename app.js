@@ -11,7 +11,7 @@
   var STORAGE_SHUFFLE = "photoFrame.shuffle";
   var DB_NAME = "photo-frame";
   var DB_STORE = "photos";
-  // Long edge of the 13-inch iPad screen. Saved JPEGs stay sharp when cover-cropped, and smaller than camera originals.
+  // Long edge of the 13-inch iPad screen. Saved JPEGs stay sharp when shown in full, and smaller than camera originals.
   var MAX_EDGE = 2752;
   var JPEG_QUALITY = 0.82;
 
