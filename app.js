@@ -324,8 +324,9 @@
     return copy;
   }
 
+  // One pass contains each current photo once. A new pass starts only after this one is finished.
   function nextPass() {
-    if (!photos.length) return [];
+    if (!photos.length || !hasAnother(now)) return [];
     var pass;
     if (!shuffle) {
       var start = 0;
@@ -336,27 +337,16 @@
       pass = photos.slice(start).concat(photos.slice(0, start));
     } else {
       pass = shuffledCopy(photos);
-      if (now && pass.length > 1 && pass[0] === now) {
-        var swapAt = -1;
-        for (var i = 1; i < pass.length; i += 1) {
-          if (pass[i] !== now) {
-            swapAt = i;
-            break;
-          }
-        }
-        if (swapAt > 0) {
-          var first = pass[0];
-          pass[0] = pass[swapAt];
-          pass[swapAt] = first;
-        }
-      }
     }
-    if (now && pass.length && pass[0] === now && hasAnother(now)) {
-      var keep = [];
-      for (var n = 0; n < pass.length; n += 1) {
-        if (pass[n] !== now) keep.push(pass[n]);
+    if (now && pass.length > 1 && pass[0] === now) {
+      for (var i = 1; i < pass.length; i += 1) {
+        if (pass[i] !== now) {
+          var first = pass[0];
+          pass[0] = pass[i];
+          pass[i] = first;
+          break;
+        }
       }
-      return keep;
     }
     return pass;
   }
@@ -611,8 +601,10 @@
     return openDb().then(function (db) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(DB_STORE, "readwrite");
-        tx.objectStore(DB_STORE).add({ blob: blob });
-        tx.oncomplete = function () { resolve(); };
+        var request = tx.objectStore(DB_STORE).add({ blob: blob });
+        var id = null;
+        request.onsuccess = function () { id = request.result; };
+        tx.oncomplete = function () { resolve(id); };
         tx.onerror = function () { reject(tx.error || new Error("save")); };
         tx.onabort = function () { reject(tx.error || new Error("save aborted")); };
       });
@@ -792,13 +784,16 @@
 
   async function addFiles(files) {
     if (!files.length) return;
+    var hadSaved = savedCount > 0;
     updateCount("Saving…");
+    var added = [];
     var savedAny = false;
     for (var i = 0; i < files.length; i += 1) {
       var blob = await fileToJpeg(files[i]);
       if (!blob) continue;
       try {
-        await saveBlob(blob);
+        var id = await saveBlob(blob);
+        added.push({ blob: blob, id: id });
         savedAny = true;
       } catch (err) {
         break;
@@ -814,7 +809,20 @@
       updateCount(savedCount ? "" : "Could not save photos on this iPad");
       return;
     }
-    await boot();
+    // The first saved library replaces the samples. Later photos join this pass's unseen remainder.
+    if (!hadSaved) {
+      await boot();
+      return;
+    }
+    for (var a = 0; a < added.length; a += 1) {
+      var objectUrl = URL.createObjectURL(added[a].blob);
+      localUrls.push(objectUrl);
+      if (added[a].id != null) urlToId[objectUrl] = added[a].id;
+      photos.push(objectUrl);
+      order.push(objectUrl);
+    }
+    savedCount = localUrls.length;
+    updateCount();
   }
 
   function enqueueLibraryWork(work) {
@@ -868,33 +876,56 @@
   async function revealAfterRemoval(target) {
     var generation = ++playGeneration;
     fading = false;
-    var upcoming = [];
-    var i;
-    for (i = index + 1; i < order.length; i += 1) {
-      if (order[i] !== target) upcoming.push(order[i]);
-    }
-    for (i = 0; i < index; i += 1) {
-      if (order[i] !== target) upcoming.push(order[i]);
-    }
     var kept = [];
+    var i;
     for (i = 0; i < photos.length; i += 1) {
       if (photos[i] !== target) kept.push(photos[i]);
     }
     photos = kept;
-    var cleaned = [];
-    for (i = 0; i < upcoming.length; i += 1) {
-      if (photos.indexOf(upcoming[i]) !== -1) cleaned.push(upcoming[i]);
+    var history = [];
+    var future = [];
+    for (i = 0; i < order.length; i += 1) {
+      if (order[i] === target || photos.indexOf(order[i]) === -1) continue;
+      if (i < index) history.push(order[i]);
+      else if (i > index) future.push(order[i]);
     }
-    order = cleaned.length ? cleaned : photos.slice();
-    index = -1;
-    now = null;
     if (!photos.length) {
+      order = [];
+      index = -1;
+      now = null;
       clearSlide(front);
       clearSlide(back);
       showStatus("No photos yet. Hold the screen, then tap Choose Photos.");
       return;
     }
-    await showFirstAvailable(generation);
+    if (!future.length) {
+      order = history.slice();
+      index = history.length - 1;
+      now = index >= 0 ? order[index] : null;
+      appendPass();
+    } else {
+      order = history.concat(future);
+    }
+    var showAt = history.length;
+    while (showAt < order.length) {
+      if (generation !== playGeneration) return;
+      var url = order[showAt];
+      try {
+        await preload(url);
+      } catch (err) {
+        order.splice(showAt, 1);
+        continue;
+      }
+      if (generation !== playGeneration) return;
+      showImmediate(url);
+      index = showAt;
+      armHold();
+      return;
+    }
+    if (generation !== playGeneration) return;
+    clearSlide(front);
+    clearSlide(back);
+    showStatus("These photos could not be loaded.");
   }
 
   async function removePhoto(target) {
