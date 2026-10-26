@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Photo Frame">
+  <title>Photo Frame</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" href="apple-touch-icon.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="stage">
+    <img id="slide-a" class="slide" alt="">
+    <img id="slide-b" class="slide" alt="">
+    <p id="status" hidden></p>
+  </main>
+  <video id="stay-awake" src="stay-awake.mp4" muted playsinline loop preload="none" disablepictureinpicture aria-hidden="true" tabindex="-1"></video>
+  <div id="settings" hidden>
+    <div id="settings-panel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h1 id="settings-title">Settings</h1>
+      <label class="file-choice" id="choose-photos">
+        Choose Photos
+        <input id="photo-input" type="file" accept="image/*" multiple>
+      </label>
+      <p id="photo-count" aria-live="polite">No saved photos</p>
+      <button type="button" id="clear-photos">Clear photos</button>
+      <p class="settings-label" id="interval-label">Interval</p>
+      <div class="interval-list" role="group" aria-labelledby="interval-label">
+        <button type="button" data-ms="10000" aria-pressed="false">10 seconds</button>
+        <button type="button" data-ms="30000" aria-pressed="false">30 seconds</button>
+        <button type="button" data-ms="60000" aria-pressed="false">1 minute</button>
+        <button type="button" data-ms="300000" aria-pressed="false">5 minutes</button>
+      </div>
+      <button type="button" id="shuffle-toggle" aria-pressed="true">Shuffle on</button>
+      <button type="button" id="close-settings">Close</button>
+    </div>
+  </div>
+  <script src="photos.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
