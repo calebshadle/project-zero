@@ -30,7 +30,8 @@
   var front = slideA;
   var back = slideB;
   var photos = [];
-  var queue = [];
+  var order = [];
+  var index = -1;
   var now = null;
   var intervalMs = DEFAULT_INTERVAL;
   var shuffle = true;
@@ -40,6 +41,7 @@
   var pressTimer = 0;
   var pressX = 0;
   var pressY = 0;
+  var pressPointer = null;
   var pressing = false;
   var wakeLockSentinel = null;
   var wakeLockTask = null;
@@ -138,52 +140,49 @@
     return copy;
   }
 
-  function refillQueue() {
-    if (!photos.length) {
-      queue = [];
-      return;
-    }
+  function nextPass() {
+    if (!photos.length) return [];
+    var pass;
     if (!shuffle) {
       var start = 0;
       if (now) {
         var at = photos.indexOf(now);
         start = at === -1 ? 0 : (at + 1) % photos.length;
       }
-      queue = photos.slice(start).concat(photos.slice(0, start));
-      return;
-    }
-    queue = shuffledCopy(photos);
-    if (now && queue.length > 1 && queue[0] === now) {
-      var swapAt = -1;
-      for (var i = 1; i < queue.length; i += 1) {
-        if (queue[i] !== now) {
-          swapAt = i;
-          break;
+      pass = photos.slice(start).concat(photos.slice(0, start));
+    } else {
+      pass = shuffledCopy(photos);
+      if (now && pass.length > 1 && pass[0] === now) {
+        var swapAt = -1;
+        for (var i = 1; i < pass.length; i += 1) {
+          if (pass[i] !== now) {
+            swapAt = i;
+            break;
+          }
+        }
+        if (swapAt > 0) {
+          var first = pass[0];
+          pass[0] = pass[swapAt];
+          pass[swapAt] = first;
         }
       }
-      if (swapAt > 0) {
-        var first = queue[0];
-        queue[0] = queue[swapAt];
-        queue[swapAt] = first;
-      }
     }
+    if (now && pass.length && pass[0] === now && hasAnother(now)) {
+      var keep = [];
+      for (var n = 0; n < pass.length; n += 1) {
+        if (pass[n] !== now) keep.push(pass[n]);
+      }
+      return keep;
+    }
+    return pass;
   }
 
-  function takeNextUrl() {
-    var guard = 0;
-    var limit = Math.max(photos.length * 3, 1);
-    while (guard < limit) {
-      if (!queue.length) {
-        refillQueue();
-        if (!queue.length) return null;
-      }
-      var url = queue.shift();
-      guard += 1;
-      if (url === now && hasAnother(now)) continue;
-      if (url === now) return null;
-      return url;
-    }
-    return null;
+  // Append the next pass. Taps and the timer share this order, so a tap does not reshuffle it.
+  function appendPass() {
+    if (index >= 0 && index < order.length - 1) return;
+    var pass = nextPass();
+    if (!pass.length) return;
+    order = order.concat(pass);
   }
 
   function preload(url) {
@@ -291,36 +290,95 @@
     }, stillMs);
   }
 
-  async function startFade() {
+  function showUrl(url, generation) {
+    return preload(url).then(function () {
+      if (generation !== playGeneration || url === now) return false;
+      return beginIncoming(url, generation);
+    }).then(function (faded) {
+      if (!faded || generation !== playGeneration) return false;
+      now = url;
+      return true;
+    }).catch(function () {
+      return false;
+    });
+  }
+
+  // direction 1 is the next photo. direction -1 is the photo just shown.
+  function step(direction) {
+    if (settingsOpen || fading || !hasAnother(now)) return Promise.resolve(false);
+    if (direction < 0 && index <= 0) return Promise.resolve(false);
     var generation = playGeneration;
-    if (fading || settingsOpen || !hasAnother(now)) return;
+    clearTimeout(holdTimer);
+    holdTimer = 0;
     fading = true;
-    try {
-      var guard = 0;
-      while (guard < photos.length * 3) {
-        if (generation !== playGeneration) return;
-        var url = takeNextUrl();
-        guard += 1;
-        if (!url) break;
-        try {
-          await preload(url);
-        } catch (err) {
-          continue;
+    var moved = false;
+    var travel = direction < 0 ? stepBack(generation) : stepForward(generation);
+    return travel.then(function (didMove) {
+      moved = didMove;
+    }).finally(function () {
+      if (generation !== playGeneration) return;
+      fading = false;
+      if (moved || hasAnother(now)) armHold();
+    });
+  }
+
+  function stepBack(generation) {
+    var cursor = index - 1;
+    function tryOne() {
+      if (generation !== playGeneration || cursor < 0) return Promise.resolve(false);
+      var url = order[cursor];
+      if (!url || url === now) {
+        cursor -= 1;
+        return tryOne();
+      }
+      var at = cursor;
+      return showUrl(url, generation).then(function (ok) {
+        if (generation !== playGeneration) return false;
+        if (ok) {
+          index = at;
+          return true;
         }
-        if (generation !== playGeneration) return;
-        if (url === now) continue;
-        var faded = await beginIncoming(url, generation);
-        if (generation !== playGeneration) return;
-        if (!faded) continue;
-        now = url;
-        return;
-      }
-    } finally {
-      if (generation === playGeneration) {
-        fading = false;
-        armHold();
-      }
+        order.splice(at, 1);
+        if (at < index) index -= 1;
+        cursor = at - 1;
+        return tryOne();
+      });
     }
+    return tryOne();
+  }
+
+  function stepForward(generation) {
+    var guard = 0;
+    var limit = Math.max(photos.length * 3, 1);
+    function tryOne() {
+      if (generation !== playGeneration || guard >= limit) return Promise.resolve(false);
+      guard += 1;
+      if (index >= order.length - 1) {
+        var size = order.length;
+        appendPass();
+        if (order.length === size) return Promise.resolve(false);
+      }
+      var at = index + 1;
+      var url = order[at];
+      if (!url || url === now) {
+        if (url === now) order.splice(at, 1);
+        return tryOne();
+      }
+      return showUrl(url, generation).then(function (ok) {
+        if (generation !== playGeneration) return false;
+        if (ok) {
+          index = at;
+          return true;
+        }
+        order.splice(at, 1);
+        return tryOne();
+      });
+    }
+    return tryOne();
+  }
+
+  function startFade() {
+    step(1);
   }
 
   function openDb() {
@@ -480,7 +538,8 @@
     localUrls = nextUrls;
     savedCount = nextUrls.length;
     updateCount();
-    queue = [];
+    order = [];
+    index = -1;
     now = null;
     if (savedCount > 0) {
       photos = nextUrls.slice();
@@ -496,18 +555,19 @@
       revokeLocalUrls(previousUrls);
       return;
     }
-    refillQueue();
+    appendPass();
     var tried = 0;
-    while (tried < photos.length && queue.length) {
+    while (tried < photos.length && order.length) {
       if (generation !== playGeneration) {
         revokeLocalUrls(previousUrls);
         return;
       }
-      var url = queue.shift();
+      var url = order[0];
       tried += 1;
       try {
         await preload(url);
       } catch (err) {
+        order.shift();
         continue;
       }
       if (generation !== playGeneration) {
@@ -515,6 +575,7 @@
         return;
       }
       showImmediate(url);
+      index = 0;
       revokeLocalUrls(previousUrls);
       armHold();
       return;
@@ -576,28 +637,51 @@
 
   function cancelPress() {
     pressing = false;
+    pressPointer = null;
     clearTimeout(pressTimer);
     pressTimer = 0;
+  }
+
+  // Left tap: previous photo in this play order. Right tap: next photo. A tap does not reshuffle.
+  function tapPhoto(clientX) {
+    if (settingsOpen || fading) return;
+    var rect = stage.getBoundingClientRect();
+    var mid = rect.left + rect.width / 2;
+    step(clientX < mid ? -1 : 1);
   }
 
   stage.addEventListener("pointerdown", function (event) {
     if (settingsOpen) return;
     if (event.button !== undefined && event.button !== 0) return;
     pressing = true;
+    pressPointer = event.pointerId;
     pressX = event.clientX;
     pressY = event.clientY;
     clearTimeout(pressTimer);
     pressTimer = setTimeout(function () {
       pressTimer = 0;
       pressing = false;
+      pressPointer = null;
       openSettings();
     }, LONG_PRESS_MS);
   });
 
-  window.addEventListener("pointerup", cancelPress);
-  window.addEventListener("pointercancel", cancelPress);
+  window.addEventListener("pointerup", function (event) {
+    if (!pressing || event.pointerId !== pressPointer) return;
+    var dx = event.clientX - pressX;
+    var dy = event.clientY - pressY;
+    var moved = Math.sqrt(dx * dx + dy * dy) > MOVE_CANCEL_PX;
+    var x = event.clientX;
+    cancelPress();
+    if (moved || settingsOpen) return;
+    tapPhoto(x);
+  });
+  window.addEventListener("pointercancel", function (event) {
+    if (!pressing || event.pointerId !== pressPointer) return;
+    cancelPress();
+  });
   window.addEventListener("pointermove", function (event) {
-    if (!pressing) return;
+    if (!pressing || event.pointerId !== pressPointer) return;
     var dx = event.clientX - pressX;
     var dy = event.clientY - pressY;
     if (Math.sqrt(dx * dx + dy * dy) > MOVE_CANCEL_PX) cancelPress();
@@ -634,7 +718,8 @@
 
   shuffleButton.addEventListener("click", function () {
     shuffle = !shuffle;
-    queue = [];
+    if (index >= 0) order.length = index + 1;
+    else order = [];
     writeSettings();
     syncControls();
   });
