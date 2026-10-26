@@ -147,6 +147,7 @@ html.home-screen #settings {
 
 .interval-list button,
 #shuffle-toggle,
+#remove-photo,
 #clear-photos,
 #close-settings,
 .file-choice {
@@ -194,6 +195,7 @@ html.home-screen #settings {
 }
 
 #shuffle-toggle,
+#remove-photo,
 #clear-photos,
 #close-settings {
   display: block;
@@ -201,8 +203,13 @@ html.home-screen #settings {
   margin-top: 12px;
 }
 
+#remove-photo,
 #clear-photos {
   margin-top: 8px;
+}
+
+#remove-photo:disabled {
+  opacity: 0.45;
 }
 
 #close-settings {

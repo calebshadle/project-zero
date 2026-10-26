@@ -9,6 +9,7 @@
   var DEFAULT_INTERVAL = 30000;
   var STORAGE_INTERVAL = "photoFrame.intervalMs";
   var STORAGE_SHUFFLE = "photoFrame.shuffle";
+  var STORAGE_HIDDEN = "photoFrame.hiddenSamples";
   var DB_NAME = "photo-frame";
   var DB_STORE = "photos";
   // Long edge of the 13-inch iPad screen. Saved JPEGs stay sharp when shown in full, and smaller than camera originals.
@@ -25,6 +26,7 @@
   var closeButton = document.getElementById("close-settings");
   var photoInput = document.getElementById("photo-input");
   var photoCount = document.getElementById("photo-count");
+  var removeButton = document.getElementById("remove-photo");
   var clearButton = document.getElementById("clear-photos");
 
   var front = slideA;
@@ -46,6 +48,9 @@
   var wakeLockSentinel = null;
   var wakeLockTask = null;
   var localUrls = [];
+  var urlToId = {};
+  var hiddenSamples = [];
+  var removeTarget = null;
   var savedCount = 0;
   var playGeneration = 0;
   var libraryChain = Promise.resolve();
@@ -67,6 +72,45 @@
       if (trimmed) list.push(trimmed);
     }
     return list;
+  }
+
+  function readHidden() {
+    hiddenSamples = [];
+    try {
+      var raw = JSON.parse(localStorage.getItem(STORAGE_HIDDEN) || "[]");
+      if (!Array.isArray(raw)) return;
+      for (var i = 0; i < raw.length; i += 1) {
+        if (typeof raw[i] !== "string") continue;
+        var trimmed = raw[i].trim();
+        if (trimmed && hiddenSamples.indexOf(trimmed) === -1) hiddenSamples.push(trimmed);
+      }
+    } catch (err) {
+      hiddenSamples = [];
+    }
+  }
+
+  function writeHidden() {
+    try {
+      localStorage.setItem(STORAGE_HIDDEN, JSON.stringify(hiddenSamples));
+    } catch (err) {
+      // The skip still applies until the page closes when storage throws.
+    }
+  }
+
+  function rememberHidden(url) {
+    readHidden();
+    if (hiddenSamples.indexOf(url) === -1) hiddenSamples.push(url);
+    writeHidden();
+  }
+
+  function activeSamples() {
+    readHidden();
+    var list = readList();
+    var kept = [];
+    for (var i = 0; i < list.length; i += 1) {
+      if (hiddenSamples.indexOf(list[i]) === -1) kept.push(list[i]);
+    }
+    return kept;
   }
 
   function readSettings() {
@@ -433,6 +477,18 @@
     });
   }
 
+  function deleteSaved(id) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(DB_STORE, "readwrite");
+        tx.objectStore(DB_STORE).delete(id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error || new Error("delete")); };
+        tx.onabort = function () { reject(tx.error || new Error("delete aborted")); };
+      });
+    });
+  }
+
   function clearSaved() {
     return openDb().then(function (db) {
       return new Promise(function (resolve, reject) {
@@ -531,11 +587,16 @@
     if (generation !== playGeneration) return;
     fading = false;
     var nextUrls = [];
+    var nextIds = {};
     for (var i = 0; i < records.length; i += 1) {
-      if (records[i] && records[i].blob) nextUrls.push(URL.createObjectURL(records[i].blob));
+      if (!records[i] || !records[i].blob) continue;
+      var objectUrl = URL.createObjectURL(records[i].blob);
+      nextUrls.push(objectUrl);
+      if (records[i].id != null) nextIds[objectUrl] = records[i].id;
     }
     var previousUrls = localUrls;
     localUrls = nextUrls;
+    urlToId = nextIds;
     savedCount = nextUrls.length;
     updateCount();
     order = [];
@@ -545,7 +606,7 @@
       photos = nextUrls.slice();
       document.documentElement.dataset.photoSource = "local";
     } else {
-      photos = readList();
+      photos = activeSamples();
       document.documentElement.dataset.photoSource = "samples";
     }
     if (!photos.length) {
@@ -624,8 +685,109 @@
     settingsOpen = true;
     clearTimeout(holdTimer);
     holdTimer = 0;
+    removeTarget = now || (front && front.getAttribute("data-url")) || null;
+    removeButton.disabled = !removeTarget;
     syncControls();
     settingsEl.hidden = false;
+  }
+
+  function closeSettingsWithoutResume() {
+    settingsOpen = false;
+    settingsEl.hidden = true;
+    removeTarget = null;
+    clearTimeout(holdTimer);
+    holdTimer = 0;
+  }
+
+  async function showFirstAvailable(generation) {
+    var tried = 0;
+    while (tried < photos.length && order.length) {
+      if (generation !== playGeneration) return;
+      var url = order[0];
+      tried += 1;
+      try {
+        await preload(url);
+      } catch (err) {
+        order.shift();
+        continue;
+      }
+      if (generation !== playGeneration) return;
+      showImmediate(url);
+      index = 0;
+      armHold();
+      return;
+    }
+    if (generation !== playGeneration) return;
+    clearSlide(front);
+    clearSlide(back);
+    showStatus(photos.length ? "These photos could not be loaded." : "No photos yet. Hold the screen, then tap Choose Photos.");
+  }
+
+  async function revealAfterRemoval(target) {
+    var generation = ++playGeneration;
+    fading = false;
+    var upcoming = [];
+    var i;
+    for (i = index + 1; i < order.length; i += 1) {
+      if (order[i] !== target) upcoming.push(order[i]);
+    }
+    for (i = 0; i < index; i += 1) {
+      if (order[i] !== target) upcoming.push(order[i]);
+    }
+    var kept = [];
+    for (i = 0; i < photos.length; i += 1) {
+      if (photos[i] !== target) kept.push(photos[i]);
+    }
+    photos = kept;
+    var cleaned = [];
+    for (i = 0; i < upcoming.length; i += 1) {
+      if (photos.indexOf(upcoming[i]) !== -1) cleaned.push(upcoming[i]);
+    }
+    order = cleaned.length ? cleaned : photos.slice();
+    index = -1;
+    now = null;
+    if (!photos.length) {
+      clearSlide(front);
+      clearSlide(back);
+      showStatus("No photos yet. Hold the screen, then tap Choose Photos.");
+      return;
+    }
+    await showFirstAvailable(generation);
+  }
+
+  async function removePhoto(target) {
+    if (!target) return;
+    playGeneration += 1;
+    fading = false;
+    var savedId = urlToId[target];
+    if (savedId != null) {
+      try {
+        await deleteSaved(savedId);
+      } catch (err) {
+        removeTarget = target;
+        removeButton.disabled = false;
+        return;
+      }
+      var keptUrls = [];
+      for (var i = 0; i < localUrls.length; i += 1) {
+        if (localUrls[i] === target) URL.revokeObjectURL(target);
+        else keptUrls.push(localUrls[i]);
+      }
+      localUrls = keptUrls;
+      delete urlToId[target];
+      savedCount = keptUrls.length;
+      updateCount();
+      closeSettingsWithoutResume();
+      if (savedCount === 0) {
+        await boot();
+        return;
+      }
+      await revealAfterRemoval(target);
+      return;
+    }
+    rememberHidden(target);
+    closeSettingsWithoutResume();
+    await revealAfterRemoval(target);
   }
 
   function closeSettings() {
@@ -708,6 +870,14 @@
     photoInput.value = "";
     if (!files.length) return;
     enqueueLibraryWork(function () { return addFiles(files); });
+  });
+
+  removeButton.addEventListener("click", function () {
+    var target = removeTarget;
+    if (!target) return;
+    removeTarget = null;
+    removeButton.disabled = true;
+    enqueueLibraryWork(function () { return removePhoto(target); });
   });
 
   clearButton.addEventListener("click", function () {
